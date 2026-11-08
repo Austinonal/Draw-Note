@@ -21,6 +21,16 @@ createRoot(document.getElementById("root")!).render(
   </StrictMode>,
 );
 
+// A page opened before a redeploy asks for chunk files that no longer exist (their names change on
+// every build): reload once to get the current version instead of failing (e.g. PDF import).
+window.addEventListener("vite:preloadError", (e) => {
+  const last = Number(sessionStorage.getItem("dn.reloadedAt") || 0);
+  if (Date.now() - last < 30_000) return; // already tried: let the error show instead of looping
+  e.preventDefault();
+  sessionStorage.setItem("dn.reloadedAt", String(Date.now()));
+  location.reload();
+});
+
 if ("serviceWorker" in navigator && import.meta.env.PROD && !(window as unknown as { Capacitor?: unknown }).Capacitor) {
   window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(() => undefined));
 }
