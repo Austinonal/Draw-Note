@@ -150,6 +150,36 @@ export interface Layer {
   locked: boolean;
 }
 
+/** A line of text detected in an imported PDF page (document units). It draws nothing while
+ * unchanged — the page background shows the original — and is redrawn over a cover once edited
+ * or moved. */
+export interface PdfLine {
+  id: string;
+  x: number;
+  y: number; // top of the original box
+  w: number;
+  h: number;
+  base: number; // baseline
+  size: number;
+  font: string;
+  color: string; // sampled ink colour
+  bg: string; // sampled background colour, used to cover the original
+  orig: string;
+  text: string;
+  dx: number;
+  dy: number;
+}
+export const pdfLineEdited = (l: PdfLine) => l.text !== l.orig || l.dx !== 0 || l.dy !== 0;
+
+/** A patch of background colour over an imported page (where an element was lifted off it). */
+export interface Cover {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  color: string;
+}
+
 export interface Page {
   id: string;
   w: number; // page size in document units
@@ -164,6 +194,8 @@ export interface Page {
   bookmarked: boolean;
   bg?: string; // imported PDF / image page background (data URL)
   bgText?: string; // text extracted from an imported PDF page, for search
+  pdfLines?: PdfLine[];
+  covers?: Cover[];
 }
 
 export interface Doc {
@@ -179,6 +211,7 @@ export interface Doc {
   pages: Page[];
   thumb?: string;
   timelapse?: string[]; // small JPEG frames (painting replay)
+  pdfEditable?: boolean; // imported PDF text and elements can be edited / moved (switchable any time)
 }
 
 export interface Folder {
@@ -285,6 +318,7 @@ export function docSearchText(d: Doc): string {
   const parts = [d.title];
   for (const p of d.pages) {
     if (p.bgText) parts.push(p.bgText);
+    for (const l of p.pdfLines ?? []) if (l.text !== l.orig) parts.push(l.text);
     for (const o of p.objects) if (o.type === "text" || o.type === "sticky") parts.push(o.text);
   }
   return parts.join(" \n").toLowerCase();

@@ -1,6 +1,7 @@
 // Draws pages: paper, imported background, raster paint layers (blend modes, opacity, clipping
 // masks) and the vector notes layer.
 import type { InkObj, Layer, Obj, Page } from "./model";
+import { pdfLineEdited } from "./model";
 import { drawPaper } from "./paper";
 import { objBounds } from "./geometry";
 import { makeCanvas, ctx2d } from "../paint/engine";
@@ -206,6 +207,29 @@ export function drawObj(ctx: CanvasRenderingContext2D, o: Obj): void {
   }
 }
 
+/** Edits made to an imported PDF page: covers over lifted elements and edited / moved text lines. */
+export function drawPdfEdits(ctx: CanvasRenderingContext2D, page: Page, skip?: Set<string>): void {
+  if (!page.covers?.length && !page.pdfLines?.some(pdfLineEdited)) return;
+  ctx.save();
+  for (const c of page.covers ?? []) {
+    ctx.fillStyle = c.color;
+    ctx.fillRect(c.x, c.y, c.w, c.h);
+  }
+  const edited = (page.pdfLines ?? []).filter(pdfLineEdited);
+  for (const l of edited) {
+    ctx.fillStyle = l.bg;
+    ctx.fillRect(l.x - 1, l.y - 1, l.w + 2, l.h + 2);
+  }
+  ctx.textBaseline = "alphabetic";
+  for (const l of edited) {
+    if (skip?.has(l.id) || !l.text) continue;
+    ctx.fillStyle = l.color;
+    ctx.font = `${l.size}px ${l.font}, "Noto Sans Thai", sans-serif`;
+    ctx.fillText(l.text, l.x + l.dx, l.base + l.dy);
+  }
+  ctx.restore();
+}
+
 export type LayerSource = (l: Layer) => HTMLCanvasElement | null;
 
 let scratch: HTMLCanvasElement | null = null;
@@ -258,6 +282,7 @@ export function renderPage(ctx: CanvasRenderingContext2D, page: Page, src: Layer
     const img = getImage(page.bg);
     if (img) ctx.drawImage(img, 0, 0, page.w, page.h);
   }
+  drawPdfEdits(ctx, page);
   ctx.restore();
   ctx.save();
   ctx.scale(scale / page.scale, scale / page.scale);

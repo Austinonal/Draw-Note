@@ -101,6 +101,25 @@ export function Seg<T extends string>({ value, options, onChange }: { value: T; 
   );
 }
 
+/** Asked after importing a PDF; the choice can be switched later in Actions. */
+export function PdfModeSheet({ onPick, onClose }: { onPick: (editable: boolean) => void; onClose: () => void }) {
+  return (
+    <Sheet title="How do you want to use this PDF?" onClose={onClose}>
+      <div className="create-grid">
+        <button onClick={() => onPick(false)}>
+          <b>Read &amp; write</b>
+          <small>Read it and add handwriting, highlights and notes on top. The PDF itself stays as it is.</small>
+        </button>
+        <button onClick={() => onPick(true)}>
+          <b>Read, write &amp; edit the PDF</b>
+          <small>Also tap the PDF&apos;s text to change it in place, drag lines to move them, and lift out pictures or tables.</small>
+        </button>
+      </div>
+      <p className="hint">You can switch this any time in Actions (🔧) → &ldquo;Edit PDF text &amp; elements&rdquo;.</p>
+    </Sheet>
+  );
+}
+
 export function Toast({ msg, onDone }: { msg: string; onDone: () => void }) {
   useEffect(() => {
     const t = setTimeout(onDone, 1600);

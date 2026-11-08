@@ -82,3 +82,12 @@ describe("model", () => {
     expect(docSearchText(n)).toContain("สวัสดี");
   });
 });
+
+describe("PDF text lines", async () => {
+  const { groupRuns } = await import("../lib/pdf");
+  it("joins runs on one baseline, keeps columns and lines apart", () => {
+    const run = (x: number, base: number, str: string, w = str.length * 6) => ({ x, base, size: 12, w, str, font: "serif" });
+    const lines = groupRuns([run(10, 50, "Hello"), run(46, 50.5, "world"), run(300, 50, "Column 2"), run(10, 70, "Next line")]);
+    expect(lines.map((l) => l.str)).toEqual(["Hello world", "Column 2", "Next line"]);
+  });
+});

@@ -4,7 +4,7 @@ import type { Doc, Folder, Paper, PageSize } from "../lib/model";
 import { CANVAS_PRESETS, COVERS, PAPERS, PAPER_COLORS, docSearchText, id, newCanvasDoc, newNotebook, isDark } from "../lib/model";
 import { deleteDocForever, deleteFolder, exportBackup, importBackup, listDocs, listFolders, putDoc, putFolder } from "../lib/storage";
 import { drawPaper } from "../lib/paper";
-import { Seg, Sheet, Toggle, pickFile, readAsDataUrl, shareOrDownload } from "./ui";
+import { PdfModeSheet, Seg, Sheet, Toggle, pickFile, readAsDataUrl, shareOrDownload } from "./ui";
 import { loadImage } from "../lib/render";
 import { newLayer } from "../lib/model";
 import { putBlob, layerKey } from "../lib/storage";
@@ -87,14 +87,24 @@ export function Library({ onOpen }: { onOpen: (d: Doc) => void }) {
       const pages = await importPdf(f, (a, b) => setBusy(`Importing PDF… ${a}/${b}`));
       const d = newNotebook(f.name.replace(/\.pdf$/i, ""), { paper: "blank", paperColor: "#ffffff", size: "a4", landscape: false, cover: COVERS[Math.floor(Math.random() * COVERS.length)], folderId });
       d.pages = pages;
-      await putDoc(d);
       setBusy(null);
       setSheet(null);
-      onOpen(d);
+      setPdfDoc(d); // ask read & write vs. editable, then open
+
     } catch (e) {
       setBusy(null);
       alert("Could not import this PDF: " + (e as Error).message);
     }
+  };
+
+  const [pdfDoc, setPdfDoc] = useState<Doc | null>(null);
+  const openPdf = async (editable: boolean) => {
+    const d = pdfDoc;
+    setPdfDoc(null);
+    if (!d) return;
+    d.pdfEditable = editable;
+    await putDoc(d);
+    onOpen(d);
   };
 
   const importImageDoc = async () => {
@@ -367,6 +377,7 @@ export function Library({ onOpen }: { onOpen: (d: Doc) => void }) {
           </div>
         </Sheet>
       )}
+      {pdfDoc && <PdfModeSheet onPick={(v) => void openPdf(v)} onClose={() => void openPdf(false)} />}
       {busy && <div className="busy">{busy}</div>}
     </div>
   );

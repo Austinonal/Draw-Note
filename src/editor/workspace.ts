@@ -1,10 +1,10 @@
 // The editing surface: owns the display canvas, the current page's raster layers, the view
 // (zoom / pan / rotate), input (pen, touch, mouse, gestures), every tool's interaction, history and
 // saving. React (Editor.tsx) drives it through ToolState and reads its state for the UI.
-import type { Doc, InkObj, Layer, Obj, Page, Pt, ShapeObj } from "../lib/model";
+import type { Cover, Doc, InkObj, Layer, Obj, Page, PdfLine, Pt, ShapeObj } from "../lib/model";
 import { cloneObj, id, newLayer, siblingPage } from "../lib/model";
 import { drawPaper } from "../lib/paper";
-import { compositeLayers, drawObj, drawInk, getImage, setImageLoadListener, loadImage } from "../lib/render";
+import { compositeLayers, drawObj, drawInk, drawPdfEdits, getImage, setImageLoadListener, loadImage } from "../lib/render";
 import { hitObj, lassoSelects, objBounds, recognize, scaleObj, shapePoints, splitInk, translateObj, unionBox, type Box, type QuickShape } from "../lib/geometry";
 import { StrokeEngine, ctx2d, makeCanvas, clampRect, unionRect, type Rect } from "../paint/engine";
 import { findBrush, type Brush } from "../paint/brushes";
@@ -17,7 +17,14 @@ import type { PaintSlot, ToolState, WorkspaceEvents } from "./types";
 type Hist =
   | { kind: "raster"; page: string; layer: string; x: number; y: number; before: ImageData; after: ImageData }
   | { kind: "objects"; page: string; before: Obj[]; after: Obj[] }
-  | { kind: "layers"; page: string; before: LayerSnap; after: LayerSnap };
+  | { kind: "layers"; page: string; before: LayerSnap; after: LayerSnap }
+  | { kind: "pdf"; page: string; before: PdfSnap; after: PdfSnap };
+
+interface PdfSnap {
+  lines: PdfLine[];
+  covers: Cover[];
+  objects: Obj[];
+}
 
 interface LayerSnap {
   layers: Layer[];
@@ -63,6 +70,8 @@ type Action =
   | { kind: "select"; poly: { x: number; y: number }[]; x0: number; y0: number }
   | { kind: "transform"; lx: number; ly: number; corner: boolean; start: DOMMatrix; cx: number; cy: number; d0: number }
   | { kind: "laser" }
+  | { kind: "pdfLine"; line: PdfLine; before: PdfSnap; sx: number; sy: number; dx0: number; dy0: number; moved: boolean }
+  | { kind: "lift"; poly: { x: number; y: number }[]; x0: number; y0: number }
   | { kind: "pan"; lx: number; ly: number }
   | { kind: "gesture"; start: View; a: PointerInfo; b: PointerInfo; t: number; moved: boolean; fingers: number };
 
@@ -257,7 +266,7 @@ export class Workspace {
 
   private paperCanvas(): HTMLCanvasElement {
     const p = this.page;
-    const key = `${p.id}|${p.paper}|${p.paperColor}|${p.bg ? p.bg.length : 0}|${p.w}x${p.h}|${!!(p.bg && getImage(p.bg))}`;
+    const key = `${p.id}|${p.paper}|${p.paperColor}|${p.bg ? p.bg.length : 0}|${p.w}x${p.h}|${!!(p.bg && getImage(p.bg))}|${this.pdfRev}`;
     if (this.paperCache && this.paperKey === key) return this.paperCache;
     const s = Math.min(2, 2400 / Math.max(p.w, p.h));
     const c = this.paperCache && this.paperCache.width === Math.round(p.w * s) ? this.paperCache : makeCanvas(p.w * s, p.h * s);
@@ -268,6 +277,7 @@ export class Workspace {
       const img = getImage(p.bg);
       if (img) g.drawImage(img, 0, 0, p.w, p.h);
     }
+    drawPdfEdits(g, p, this.editingSkip);
     this.paperCache = c;
     this.paperKey = key;
     return c;
@@ -462,7 +472,16 @@ export class Workspace {
       }
     }
     // lasso / selection path in progress
-    if (this.action.kind === "lasso" || this.action.kind === "select") {
+    // outlines of editable PDF text while the Text tool is active
+    if (this.pdfEditable && this.ts.mode === "notes" && (this.ts.noteTool === "text" || this.ts.noteTool === "lift")) {
+      g.save();
+      g.strokeStyle = "rgba(59,130,246,.45)";
+      g.lineWidth = px;
+      g.setLineDash([3 * px, 3 * px]);
+      for (const l of this.page.pdfLines ?? []) g.strokeRect(l.x + l.dx - 1, l.y + l.dy - 1, l.w + 2, l.h + 2);
+      g.restore();
+    }
+    if (this.action.kind === "lasso" || this.action.kind === "select" || this.action.kind === "lift") {
       const poly = this.action.poly;
       g.save();
       g.strokeStyle = "#3b82f6";
@@ -609,6 +628,8 @@ export class Workspace {
       this.page.objects = h[which].map(cloneObj);
       this.selected.clear();
       this.notesDirty = true;
+    } else if (h.kind === "pdf") {
+      this.restorePdf(h[which]);
     } else {
       const snap = h[which];
       this.page.layers = snap.layers.map((l) => ({ ...l }));
@@ -995,6 +1016,9 @@ export class Workspace {
         case "lasso":
           this.action = { kind: "lasso", poly: [d] };
           break;
+        case "lift":
+          if (this.pdfEditable) this.action = { kind: "lift", poly: [d], x0: d.x, y0: d.y };
+          break;
         case "shape": {
           const obj: ShapeObj = { id: id(), type: "shape", shape: this.ts.shapeKind, x: d.x, y: d.y, w: 0, h: 0, color: this.ts.color, width: this.ts.penWidth.pen, fill: this.ts.shapeFill ? this.ts.color + "55" : null };
           this.action = { kind: "shape", obj };
@@ -1004,9 +1028,12 @@ export class Workspace {
           this.action = { kind: "tape", obj: { id: id(), type: "tape", x: d.x, y: d.y - 14, w: 0, h: 28, color: this.ts.tapeColor, hidden: true } };
           break;
         case "text":
-        case "sticky":
-          this.placeText(tool, d.x, d.y);
+        case "sticky": {
+          const line = tool === "text" ? this.pdfLineAt(d.x, d.y) : undefined;
+          if (line) this.action = { kind: "pdfLine", line, before: this.pdfSnap(), sx: d.x, sy: d.y, dx0: line.dx, dy0: line.dy, moved: false };
+          else this.placeText(tool, d.x, d.y);
           break;
+        }
         case "laser":
           this.laser.push({ x: d.x, y: d.y, t: now });
           this.action = { kind: "laser" };
@@ -1098,6 +1125,18 @@ export class Workspace {
       case "erase":
         this.eraseAt(d.x, d.y);
         break;
+      case "pdfLine":
+        if (!a.moved && Math.hypot(d.x - a.sx, d.y - a.sy) * this.view.zoom < 6) return;
+        a.moved = true;
+        a.line.dx = a.dx0 + d.x - a.sx;
+        a.line.dy = a.dy0 + d.y - a.sy;
+        this.pdfRev++;
+        this.request();
+        break;
+      case "lift":
+        a.poly = this.shapePoly(a.x0, a.y0, d.x, d.y, "rect");
+        this.request();
+        break;
       case "lasso":
       case "select":
         a.poly.push(d);
@@ -1179,6 +1218,13 @@ export class Workspace {
       }
       case "erase":
         if (a.changed) this.push({ kind: "objects", page: this.page.id, before: a.before, after: this.page.objects.map(cloneObj) });
+        break;
+      case "pdfLine":
+        if (a.moved) this.pushPdf(a.before);
+        else this.editPdfLine(a.line);
+        break;
+      case "lift":
+        this.liftArea(a.poly);
         break;
       case "lasso": {
         this.selected = new Set(this.page.objects.filter((o) => lassoSelects(o, a.poly)).map((o) => o.id));
@@ -1324,6 +1370,77 @@ export class Workspace {
     this.page.objects.push(obj);
     this.editText(obj.id, true);
   }
+  // ---------------------------------------------------------------- imported PDF editing
+  pdfRev = 0;
+  get pdfEditable(): boolean {
+    return !!this.doc.pdfEditable && !this.ts.readOnly;
+  }
+  private pdfLineAt(x: number, y: number): PdfLine | undefined {
+    if (!this.pdfEditable) return undefined;
+    return (this.page.pdfLines ?? []).find((l) => x >= l.x + l.dx - 2 && x <= l.x + l.dx + l.w + 2 && y >= l.y + l.dy - 2 && y <= l.y + l.dy + l.h + 2);
+  }
+  private pdfSnap(): PdfSnap {
+    return { lines: (this.page.pdfLines ?? []).map((l) => ({ ...l })), covers: (this.page.covers ?? []).map((c) => ({ ...c })), objects: this.page.objects.map(cloneObj) };
+  }
+  private restorePdf(s: PdfSnap): void {
+    this.page.pdfLines = s.lines.map((l) => ({ ...l }));
+    this.page.covers = s.covers.map((c) => ({ ...c }));
+    this.page.objects = s.objects.map(cloneObj);
+    this.selected.clear();
+    this.pdfRev++;
+    this.notesDirty = true;
+  }
+  private pushPdf(before: PdfSnap): void {
+    this.pdfRev++;
+    this.push({ kind: "pdf", page: this.page.id, before, after: this.pdfSnap() });
+  }
+  private pdfBefore: PdfSnap | null = null;
+  private editPdfLine(l: PdfLine): void {
+    this.pdfBefore = this.pdfSnap();
+    this.editingSkip = new Set([l.id]);
+    this.pdfRev++;
+    const tl = this.toScreen(l.x + l.dx, l.y + l.dy);
+    const z = this.view.zoom;
+    this.ev.editText({ id: l.id, kind: "text", left: tl.x, top: tl.y, width: Math.max(l.w, 60) * z, height: l.h * z, fontSize: l.size * z, color: l.color, font: l.font });
+    this.request();
+  }
+  /** Lifts a rectangle of the imported page off into a movable image (any element: picture,
+   * table, diagram), covering where it was. */
+  private liftArea(poly: { x: number; y: number }[]): void {
+    const p = this.page;
+    const img = p.bg ? getImage(p.bg) : null;
+    if (!img || poly.length < 4) return;
+    const xs = poly.map((q) => q.x), ys = poly.map((q) => q.y);
+    const x = Math.max(0, Math.min(...xs)), y = Math.max(0, Math.min(...ys));
+    const w = Math.min(p.w, Math.max(...xs)) - x, h = Math.min(p.h, Math.max(...ys)) - y;
+    if (w < 4 || h < 4) return;
+    // crop from the page as currently shown (background + earlier PDF edits)
+    const k = Math.min(3, img.width / p.w);
+    const crop = makeCanvas(w * k, h * k);
+    const cg = ctx2d(crop, true);
+    cg.setTransform(k, 0, 0, k, -x * k, -y * k);
+    cg.drawImage(img, 0, 0, p.w, p.h);
+    // only text lines fully inside travel with the picture; others stay editable lines (not baked in)
+    const inside = (l: PdfLine) => l.x + l.dx >= x - 2 && l.y + l.dy >= y - 2 && l.x + l.dx + l.w <= x + w + 2 && l.y + l.dy + l.h <= y + h + 2;
+    drawPdfEdits(cg, p, new Set((p.pdfLines ?? []).filter((l) => !inside(l)).map((l) => l.id)));
+    // cover colour: median of the crop's border
+    const d = cg.getImageData(0, 0, crop.width, crop.height).data;
+    const ring: number[][] = [];
+    for (let i = 0; i < crop.width; i++) for (const j of [0, crop.height - 1]) ring.push(Array.from(d.subarray((j * crop.width + i) * 4, (j * crop.width + i) * 4 + 3)));
+    const med = (c: number) => ring.map((r) => r[c]).sort((a, b) => a - b)[ring.length >> 1] ?? 255;
+    const before = this.pdfSnap();
+    const obj: Obj = { id: id(), type: "image", x, y, w, h, src: crop.toDataURL("image/png") };
+    p.covers = [...(p.covers ?? []), { x, y, w, h, color: rgbToHex(med(0), med(1), med(2)) }];
+    // text lines inside the lifted area now travel with the picture
+    p.pdfLines = (p.pdfLines ?? []).filter((l) => !inside(l));
+    p.objects.push(obj);
+    this.notesDirty = true;
+    this.pushPdf(before);
+    this.selected = new Set([obj.id]);
+    this.ev.toast("Lifted — drag it with the lasso to move");
+    this.ev.changed();
+  }
+
   editText(objId: string, isNew = false): void {
     const o = this.page.objects.find((x) => x.id === objId);
     if (!o || (o.type !== "text" && o.type !== "sticky")) return;
@@ -1345,6 +1462,18 @@ export class Workspace {
   }
   private textBefore: Obj[] = [];
   finishText(objId: string, text: string): void {
+    const line = this.page.pdfLines?.find((l) => l.id === objId);
+    if (line && this.pdfBefore) {
+      this.editingSkip = new Set();
+      line.text = text.replace(/\n/g, " ");
+      const before = this.pdfBefore;
+      this.pdfBefore = null;
+      if (JSON.stringify(before.lines) !== JSON.stringify(this.page.pdfLines)) this.pushPdf(before);
+      else this.pdfRev++;
+      this.ev.editText(null);
+      this.request();
+      return;
+    }
     const o = this.page.objects.find((x) => x.id === objId);
     this.editingSkip = new Set();
     if (o && (o.type === "text" || o.type === "sticky")) {

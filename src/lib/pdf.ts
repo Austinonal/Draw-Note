@@ -1,7 +1,66 @@
 // PDF import (pages become annotatable page backgrounds with searchable text) and export.
 import { PDFDocument } from "pdf-lib";
 import type { Doc, Page } from "./model";
-import { newPage } from "./model";
+import { id, newPage, type PdfLine } from "./model";
+import { rgbToHex } from "../paint/color";
+
+export interface Run {
+  x: number;
+  base: number;
+  size: number;
+  w: number;
+  str: string;
+  font: string;
+}
+/** Groups text runs into lines: same baseline, close horizontally. Columns stay separate. */
+export function groupRuns(runs: Run[]): Run[] {
+  // rows: runs whose baselines are within a third of the text size (sub-pixel jitter is common)
+  const rows: Run[][] = [];
+  for (const r of [...runs].sort((a, b) => a.base - b.base)) {
+    const row = rows[rows.length - 1];
+    if (row && Math.abs(r.base - row[0].base) < Math.max(r.size, row[0].size) * 0.35) row.push(r);
+    else rows.push([r]);
+  }
+  const lines: Run[] = [];
+  for (const row of rows) {
+    let cur: Run | null = null;
+    for (const r of row.sort((a, b) => a.x - b.x)) {
+      const gap = cur ? r.x - (cur.x + cur.w) : Infinity;
+      if (cur && gap < cur.size * 1.2) {
+        cur.str += (gap > cur.size * 0.15 && !cur.str.endsWith(" ") && !r.str.startsWith(" ") ? " " : "") + r.str;
+        cur.w = Math.max(cur.w, r.x + r.w - cur.x);
+        cur.size = Math.max(cur.size, r.size);
+      } else lines.push((cur = { ...r }));
+    }
+  }
+  return lines.filter((l) => l.str.trim());
+}
+
+/** Ink and background colours of a box on the rendered page (k = canvas pixels per unit). */
+function sampleColors(img: ImageData, k: number, x: number, y: number, w: number, h: number): { color: string; bg: string } {
+  const x0 = Math.max(0, Math.floor(x * k)), y0 = Math.max(0, Math.floor(y * k));
+  const x1 = Math.min(img.width - 1, Math.ceil((x + w) * k)), y1 = Math.min(img.height - 1, Math.ceil((y + h) * k));
+  const px = (xx: number, yy: number) => {
+    const i = (yy * img.width + xx) * 4;
+    return [img.data[i], img.data[i + 1], img.data[i + 2]];
+  };
+  const ring: number[][] = [];
+  for (let xx = x0; xx <= x1; xx++) ring.push(px(xx, y0), px(xx, y1));
+  for (let yy = y0; yy <= y1; yy++) ring.push(px(x0, yy), px(x1, yy));
+  const med = (c: number) => ring.map((p) => p[c]).sort((a, b) => a - b)[ring.length >> 1] ?? 255;
+  const bg = [med(0), med(1), med(2)];
+  let best = bg, far = -1;
+  for (let yy = y0; yy <= y1; yy++)
+    for (let xx = x0; xx <= x1; xx++) {
+      const p = px(xx, yy);
+      const d = (p[0] - bg[0]) ** 2 + (p[1] - bg[1]) ** 2 + (p[2] - bg[2]) ** 2;
+      if (d > far) {
+        far = d;
+        best = p;
+      }
+    }
+  return { bg: rgbToHex(bg[0], bg[1], bg[2]), color: rgbToHex(best[0], best[1], best[2]) };
+}
 import { pageToCanvas, type LayerSource } from "./render";
 
 async function pdfjs() {
@@ -26,12 +85,27 @@ export async function importPdf(file: Blob, onProgress?: (done: number, total: n
     const c = document.createElement("canvas");
     c.width = Math.round(vp.width);
     c.height = Math.round(vp.height);
-    const ctx = c.getContext("2d")!;
+    const ctx = c.getContext("2d", { willReadFrequently: true })!;
     ctx.fillStyle = "#fff";
     ctx.fillRect(0, 0, c.width, c.height);
     await pg.render({ canvas: c, canvasContext: ctx, viewport: vp }).promise;
     const text = await pg.getTextContent();
+    const runs: Run[] = [];
+    for (const it of text.items) {
+      if (!("str" in it) || !it.str.trim()) continue;
+      const t = lib.Util.transform(vp1.transform, it.transform);
+      if (Math.abs(t[1]) > 0.01 || Math.abs(t[2]) > 0.01) continue; // shortcut: rotated text is not editable, it stays in the background
+      const size = Math.abs(t[3]) || Math.abs(t[0]);
+      runs.push({ x: t[4], base: t[5], size, w: it.width * (96 / 72), str: it.str, font: text.styles[it.fontName]?.fontFamily ?? "sans-serif" });
+    }
+    const pix = ctx.getImageData(0, 0, c.width, c.height);
+    const pdfLines: PdfLine[] = groupRuns(runs).map((r) => {
+      const y = r.base - r.size * 0.92;
+      const hgt = r.size * 1.2;
+      return { id: id(), x: r.x, y, w: r.w, h: hgt, base: r.base, size: r.size, font: r.font, ...sampleColors(pix, quality, r.x, y, r.w, hgt), orig: r.str, text: r.str, dx: 0, dy: 0 };
+    });
     const page = newPage({ w, h, scale: 1.5, paper: "blank", paperColor: "#ffffff" });
+    page.pdfLines = pdfLines;
     page.bg = c.toDataURL("image/jpeg", 0.88);
     page.bgText = text.items.map((it) => ("str" in it ? it.str : "")).join(" ");
     pages.push(page);

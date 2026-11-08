@@ -10,7 +10,8 @@ import { Workspace } from "../editor/workspace";
 import { defaultToolState, type NoteTool, type PaintTool, type TextEditRequest, type ToolState, type PaintSlot } from "../editor/types";
 import { ColorPanel } from "./ColorPanel";
 import { AdjustPanel, BrushPanel, LayersPanel, PagesPanel, TimelapsePanel } from "./panels";
-import { Panel, Range, Seg, Toggle, Toast, VSlider, pickFile, readAsDataUrl, shareOrDownload, safeName } from "./ui";
+import { Panel, PdfModeSheet, Range, Seg, Toggle, Toast, VSlider, pickFile, readAsDataUrl, shareOrDownload, safeName } from "./ui";
+import type { Page } from "../lib/model";
 import type { Brush as BrushDef } from "../paint/brushes";
 import { exportBackup, getValue, putValue } from "../lib/storage";
 import { preloadBrushImages } from "../paint/engine";
@@ -56,6 +57,7 @@ const NOTE_TOOLS: { id: NoteTool; label: string; icon: React.ReactNode }[] = [
   { id: "sticky", label: "Sticky note", icon: <StickyNote size={20} /> },
   { id: "tape", label: "Tape", icon: <Ruler size={20} /> },
   { id: "laser", label: "Laser pointer", icon: <Sparkles size={20} /> },
+  { id: "lift", label: "Lift PDF element", icon: <Scissors size={20} /> },
   { id: "hand", label: "Pan", icon: <Hand size={20} /> },
 ];
 const PAINT_TOOLS: { id: PaintTool; label: string; icon: React.ReactNode }[] = [
@@ -74,7 +76,8 @@ export function Editor({ doc, onClose }: { doc: Doc; onClose: () => void }) {
   const wsRef = useRef<Workspace | null>(null);
   const [ts, setTsRaw] = useState<ToolState>(() => {
     const t = load("dn.tools", defaultToolState());
-    return { ...t, mode: doc.kind === "canvas" ? "paint" : "notes", readOnly: false, animation: false };
+    // an editable PDF opens with the Text tool, ready to tap its text
+    return { ...t, mode: doc.kind === "canvas" ? "paint" : "notes", noteTool: doc.pdfEditable ? "text" : t.noteTool, readOnly: false, animation: false };
   });
   const [tick, setTick] = useState(0);
   const [panel, setPanel] = useState<PanelId>(null);
@@ -128,7 +131,8 @@ export function Editor({ doc, onClose }: { doc: Doc; onClose: () => void }) {
         setTextReq(req);
         if (req) {
           const o = w.page.objects.find((x) => x.id === req.id);
-          setTextVal(o && (o.type === "text" || o.type === "sticky") ? o.text : "");
+          const line = w.page.pdfLines?.find((l) => l.id === req.id);
+          setTextVal(line ? line.text : o && (o.type === "text" || o.type === "sticky") ? o.text : "");
         }
       },
       toast: (m) => setToast(m),
@@ -307,13 +311,23 @@ export function Editor({ doc, onClose }: { doc: Doc; onClose: () => void }) {
     try {
       const { importPdf } = await import("../lib/pdf");
       const pages = await importPdf(f, (d, t) => setBusy(`Importing PDF… ${d}/${t}`));
-      await wsRef.current.insertPages(pages);
+      setPdfPending(pages);
     } catch (e) {
       alert("PDF import failed: " + (e as Error).message);
     }
     setBusy(null);
     setPanel(null);
   };
+  const [pdfPending, setPdfPending] = useState<Page[] | null>(null);
+  const finishPdfImport = async (editable: boolean) => {
+    const pages = pdfPending;
+    setPdfPending(null);
+    if (!pages || !wsRef.current) return;
+    doc.pdfEditable = editable;
+    await wsRef.current.insertPages(pages);
+    if (editable) setTs({ mode: "notes", noteTool: "text" });
+  };
+  const hasPdf = doc.pages.some((p) => p.bg);
 
   const exportAnimation = async () => {
     const w = wsRef.current;
@@ -398,7 +412,7 @@ export function Editor({ doc, onClose }: { doc: Doc; onClose: () => void }) {
           <textarea
             className={"text-edit " + textReq.kind}
             autoFocus
-            style={{ left: textReq.left, top: textReq.top, width: Math.max(80, textReq.width), minHeight: textReq.height, fontSize: textReq.fontSize, color: textReq.kind === "text" ? ts.color : "#2a2a2a" }}
+            style={{ left: textReq.left, top: textReq.top, width: Math.max(80, textReq.width), minHeight: textReq.height, fontSize: textReq.fontSize, color: textReq.color ?? (textReq.kind === "text" ? ts.color : "#2a2a2a"), fontFamily: textReq.font }}
             value={textVal}
             onChange={(e) => setTextVal(e.target.value)}
             onBlur={finishText}
@@ -654,6 +668,22 @@ export function Editor({ doc, onClose }: { doc: Doc; onClose: () => void }) {
                 <h4>Prefs</h4>
                 <Toggle label="Draw with finger (off = stylus only, fingers pan/zoom)" checked={ts.fingerDraws} onChange={(v) => setTs({ fingerDraws: v })} />
                 <Toggle label="Read-only (view mode)" checked={ts.readOnly} onChange={(v) => setTs({ readOnly: v })} />
+                {hasPdf && (
+                  <Toggle
+                    label="Edit PDF text & elements"
+                    checked={!!doc.pdfEditable}
+                    onChange={(v) => {
+                      doc.pdfEditable = v;
+                      ws.markDocDirty();
+                      if (!v && ts.noteTool === "lift") setTs({ noteTool: "pen" });
+                      else if (v) {
+                        setTs({ mode: "notes", noteTool: "text" });
+                        if (!doc.pages.some((p) => p.pdfLines?.length)) setToast("No editable text found — PDFs imported before this update need re-importing (lifting areas still works)");
+                      }
+                      ws.request();
+                    }}
+                  />
+                )}
                 <p className="hint">Gestures: pinch to zoom (and rotate on canvases), two-finger tap = undo, three-finger tap = redo. Hold at the end of a line to snap a shape.</p>
               </div>
             )}
@@ -664,7 +694,7 @@ export function Editor({ doc, onClose }: { doc: Doc; onClose: () => void }) {
       <nav className="toolbar" onPointerDown={(e) => e.stopPropagation()}>
         <div className="tool-options">{toolOptions}</div>
         <div className="tools">
-          {(ts.mode === "notes" ? NOTE_TOOLS : PAINT_TOOLS).map((t) => {
+          {(ts.mode === "notes" ? NOTE_TOOLS.filter((t) => t.id !== "lift" || doc.pdfEditable) : PAINT_TOOLS).map((t) => {
             const on = ts.mode === "notes" ? ts.noteTool === t.id : ts.paintTool === t.id;
             return (
               <button
@@ -690,6 +720,7 @@ export function Editor({ doc, onClose }: { doc: Doc; onClose: () => void }) {
         </div>
       </nav>
 
+      {pdfPending && <PdfModeSheet onPick={(v) => void finishPdfImport(v)} onClose={() => void finishPdfImport(!!doc.pdfEditable)} />}
       {busy && <div className="busy">{busy}</div>}
       {toast && <Toast msg={toast} onDone={() => setToast(null)} />}
     </div>
@@ -793,6 +824,8 @@ function renderToolOptions(ts: ToolState, setTs: (p: Partial<ToolState>) => void
         );
       case "lasso":
         return <span className="hint">Circle items to select · drag to move · corner to resize</span>;
+      case "lift":
+        return <span className="hint">Drag a box around a picture, table or block of the PDF to lift it out and move it</span>;
       case "laser":
         return <span className="hint">Point for presenting — nothing is saved</span>;
       default:

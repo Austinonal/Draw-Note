@@ -2,7 +2,7 @@ import type { PenKind, ShapeKind } from "../lib/model";
 import type { Symmetry } from "../paint/engine";
 
 export type Mode = "notes" | "paint";
-export type NoteTool = "pen" | "pencil" | "highlighter" | "fountain" | "eraser" | "lasso" | "text" | "shape" | "sticky" | "tape" | "laser" | "hand";
+export type NoteTool = "pen" | "pencil" | "highlighter" | "fountain" | "eraser" | "lasso" | "text" | "shape" | "sticky" | "tape" | "laser" | "hand" | "lift";
 export type PaintTool = "brush" | "smudge" | "erase" | "fill" | "eyedropper" | "select" | "transform" | "hand";
 export type Tool = NoteTool | PaintTool;
 export type PaintSlot = "brush" | "smudge" | "erase";
@@ -75,6 +75,8 @@ export interface TextEditRequest {
   width: number;
   height: number;
   fontSize: number;
+  color?: string; // set for imported PDF text lines
+  font?: string;
 }
 
 export interface WorkspaceEvents {
