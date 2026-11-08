@@ -1,0 +1,6 @@
+{
+  "appId": "com.austinonal.drawnote",
+  "appName": "DrawNote",
+  "webDir": "dist",
+  "android": { "allowMixedContent": false }
+}
