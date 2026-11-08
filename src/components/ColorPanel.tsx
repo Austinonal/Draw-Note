@@ -1,6 +1,6 @@
 // Colours: Disc, Classic, Harmony, Value and Palettes, plus history (after ProCraft's Colors panel).
 import { useEffect, useRef, useState } from "react";
-import { HARMONIES, harmony, hexToHsv, hexToRgb, hsvToHex, rgbToHex, DEFAULT_PALETTES, type HSV, type Harmony } from "../paint/color";
+import { HARMONIES, harmony, hexToHsv, hexToRgb, hsvToHex, hsvToRgb, rgbToHex, DEFAULT_PALETTES, type HSV, type Harmony } from "../paint/color";
 import { Seg, Range } from "./ui";
 
 type Tab = "disc" | "classic" | "harmony" | "value" | "palettes";
@@ -19,7 +19,7 @@ function useDrag(onPoint: (x: number, y: number, r: DOMRect) => void) {
 
 function Disc({ hsv, set }: { hsv: HSV; set: (c: HSV) => void }) {
   const ref = useRef<HTMLCanvasElement>(null);
-  const S = 220;
+  const S = Math.round(260 * Math.min(3, window.devicePixelRatio || 1)); // canvas pixels = CSS size × DPR, so it stays sharp
   const r = S / 2;
   const rr = r * 0.78; // inner disc: saturation left→right, brightness bottom→top
   useEffect(() => {
@@ -31,8 +31,8 @@ function Disc({ hsv, set }: { hsv: HSV; set: (c: HSV) => void }) {
           dy = y - r;
         const d = Math.hypot(dx, dy);
         let rgb: [number, number, number] | null = null;
-        if (d <= r && d > r * 0.84) rgb = hexToRgb(hsvToHex({ h: ((Math.atan2(dy, dx) * 180) / Math.PI + 450) % 360, s: 1, v: 1 }));
-        else if (d <= rr) rgb = hexToRgb(hsvToHex({ h: hsv.h, s: (dx + rr) / (2 * rr), v: 1 - (dy + rr) / (2 * rr) }));
+        if (d <= r && d > r * 0.84) rgb = hsvToRgb({ h: ((Math.atan2(dy, dx) * 180) / Math.PI + 450) % 360, s: 1, v: 1 });
+        else if (d <= rr) rgb = hsvToRgb({ h: hsv.h, s: (dx + rr) / (2 * rr), v: 1 - (dy + rr) / (2 * rr) });
         if (!rgb) continue;
         const i = (y * S + x) * 4;
         img.data[i] = rgb[0];

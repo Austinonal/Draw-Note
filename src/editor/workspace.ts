@@ -6,7 +6,7 @@ import { cloneObj, id, newLayer, siblingPage } from "../lib/model";
 import { drawPaper } from "../lib/paper";
 import { compositeLayers, drawObj, drawInk, getImage, setImageLoadListener, loadImage } from "../lib/render";
 import { hitObj, lassoSelects, objBounds, recognize, scaleObj, shapePoints, splitInk, translateObj, unionBox, type Box, type QuickShape } from "../lib/geometry";
-import { StrokeEngine, ctx2d, makeCanvas, clampRect, type Rect } from "../paint/engine";
+import { StrokeEngine, ctx2d, makeCanvas, clampRect, unionRect, type Rect } from "../paint/engine";
 import { findBrush, type Brush } from "../paint/brushes";
 import { floodFill } from "../paint/fill";
 import { blurData } from "../paint/adjust";
@@ -195,7 +195,8 @@ export class Workspace {
 
   resize(): void {
     const r = this.canvas.getBoundingClientRect();
-    this.dpr = Math.min(3, window.devicePixelRatio || 1);
+    this.dpr = Math.min(2, window.devicePixelRatio || 1); // 3x phones: 2x looks the same and fills 2.25x fewer pixels
+    this.desk = getComputedStyle(this.canvas).getPropertyValue("--desk").trim();
     this.vw = r.width;
     this.vh = r.height;
     this.canvas.width = Math.round(r.width * this.dpr);
@@ -296,10 +297,21 @@ export class Workspace {
     if (!c) return null;
     if (l.id === this.page.activeLayer) {
       if (this.engine?.active) {
+        // Only refresh the area the stroke touched since the last frame; copying the whole
+        // layer every frame was the main cause of lag on big canvases.
         const t = this.liveCanvas();
-        const g = ctx2d(t);
-        g.clearRect(0, 0, t.width, t.height);
-        this.engine.preview(g, c, l.alphaLock);
+        const r = this.liveDirty ? clampRect(this.liveDirty, t.width, t.height) : null;
+        this.liveDirty = null;
+        if (r) {
+          const g = ctx2d(t);
+          g.save();
+          g.beginPath();
+          g.rect(r.x, r.y, r.w, r.h);
+          g.clip();
+          g.clearRect(r.x, r.y, r.w, r.h);
+          this.engine.preview(g, c, l.alphaLock);
+          g.restore();
+        }
         return t;
       }
       if (this.floating && this.floating.layer === l.id) {
@@ -318,6 +330,11 @@ export class Workspace {
     return c;
   };
   private live: HTMLCanvasElement | null = null;
+  private liveDirty: Rect | null = null;
+  private trackLive(r: Rect | null): void {
+    if (r) this.liveDirty = unionRect(this.liveDirty, r);
+  }
+  private desk = "";
   private liveCanvas(): HTMLCanvasElement {
     if (!this.live || this.live.width !== this.rw || this.live.height !== this.rh) this.live = makeCanvas(this.rw, this.rh);
     return this.live;
@@ -343,22 +360,20 @@ export class Workspace {
     const p = this.page;
     const v = this.view;
     g.setTransform(1, 0, 0, 1, 0, 0);
-    g.fillStyle = getComputedStyle(this.canvas).getPropertyValue("--desk") || "#2a2d33";
+    g.fillStyle = this.desk || "#2a2d33";
     g.fillRect(0, 0, this.canvas.width, this.canvas.height);
     const base = new DOMMatrix().scale(this.dpr).translate(v.x, v.y).rotate((v.rot * 180) / Math.PI).scale(v.zoom);
     g.setTransform(base);
-    g.save();
-    g.shadowColor = "rgba(0,0,0,.35)";
-    g.shadowBlur = 18;
-    g.shadowOffsetY = 4;
+    // cheap page shadow (shadowBlur on a page-sized rect is expensive every frame)
+    g.fillStyle = "rgba(0,0,0,.25)";
+    g.fillRect(2 / v.zoom, 4 / v.zoom, p.w, p.h);
     g.fillStyle = p.paperColor;
     g.fillRect(0, 0, p.w, p.h);
-    g.restore();
     g.save();
     g.beginPath();
     g.rect(0, 0, p.w, p.h);
     g.clip();
-    g.imageSmoothingQuality = "high";
+    // default ("low") smoothing on purpose: "medium"/"high" re-filter every layer each frame and halved the frame rate
     g.drawImage(this.paperCanvas(), 0, 0, p.w, p.h);
     // paint layers
     g.save();
@@ -1045,7 +1060,13 @@ export class Workspace {
       c,
     );
     const s = this.page.scale;
-    this.engine.add({ x: d.x * s, y: d.y * s, p: this.pressure(e), t: now });
+    // seed the live preview with the whole layer once; later frames update only dirty areas
+    const live = this.liveCanvas();
+    const lg = ctx2d(live);
+    lg.clearRect(0, 0, live.width, live.height);
+    lg.drawImage(c, 0, 0);
+    this.liveDirty = null;
+    this.trackLive(this.engine.add({ x: d.x * s, y: d.y * s, p: this.pressure(e), t: now }));
     this.action = { kind: "paint", slot, holdTimer: 0, lastMove: now, quick: false };
     this.armQuickShape();
     this.request();
@@ -1069,7 +1090,7 @@ export class Workspace {
       case "paint": {
         if (a.quick || !this.engine) return;
         const s = this.page.scale;
-        this.engine.add({ x: d.x * s, y: d.y * s, p: this.pressure(e), t: performance.now() });
+        this.trackLive(this.engine.add({ x: d.x * s, y: d.y * s, p: this.pressure(e), t: performance.now() }));
         this.armQuickShape();
         this.request();
         break;
@@ -1244,7 +1265,7 @@ export class Workspace {
       if (!shape) return;
       a.quick = true;
       const avg = pts.reduce((s, p) => s + p.p, 0) / pts.length;
-      this.engine.replacePath(shapePoints(shape, avg).map((p, i) => ({ ...p, t: i * 4 })));
+      this.trackLive(this.engine.replacePath(shapePoints(shape, avg).map((p, i) => ({ ...p, t: i * 4 }))));
       this.ev.toast(this.shapeName(shape));
       this.request();
     }

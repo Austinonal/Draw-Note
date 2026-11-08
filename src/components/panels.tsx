@@ -121,7 +121,10 @@ function Preview({ brush, color }: { brush: Brush; color: string }) {
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const c = brushPreview(brush, 220, 56, color);
+    // render at the element's real pixel size so previews are sharp on high-DPI screens
+    const dpr = Math.min(3, window.devicePixelRatio || 1);
+    const w = Math.round((el.clientWidth || 300) * dpr);
+    const c = brushPreview({ ...brush, minSize: brush.minSize * dpr, maxSize: brush.maxSize * dpr }, w, Math.round(el.clientHeight * dpr || 56 * dpr), color);
     c.className = "brush-stroke";
     el.replaceChildren(c);
   }, [brush, color]);
