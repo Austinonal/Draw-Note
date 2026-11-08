@@ -50,6 +50,10 @@ export const getBlob = (key: string) => tx<Blob | undefined>("blobs", "readonly"
 export const putBlob = (key: string, b: Blob) => tx<IDBValidKey>("blobs", "readwrite", (s) => s.put(b, key));
 export const deleteBlob = (key: string) => tx<undefined>("blobs", "readwrite", (s) => s.delete(key));
 
+// Settings too large for localStorage (e.g. imported brushes with textures) share the blobs store.
+export const getValue = <T>(key: string) => tx<T | undefined>("blobs", "readonly", (s) => s.get(key));
+export const putValue = (key: string, v: unknown) => tx<IDBValidKey>("blobs", "readwrite", (s) => s.put(v, key));
+
 export function layerKey(pageId: string, layerId: string): string {
   return `${pageId}/${layerId}`;
 }

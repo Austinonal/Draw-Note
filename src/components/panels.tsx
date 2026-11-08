@@ -3,10 +3,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Eye, EyeOff, Lock, Unlock, Plus, Copy, Trash2, ArrowUp, ArrowDown, Combine, Bookmark, Play, Pause, Download, RotateCcw } from "lucide-react";
 import { BLENDS, type Layer } from "../lib/model";
 import { BRUSHES, BRUSH_SETS, STUDIO_FIELDS, type Brush, type Grain, type TipShape } from "../paint/brushes";
-import { brushPreview } from "../paint/engine";
+import { brushPreview, preloadBrushImages } from "../paint/engine";
 import { ADJUSTMENTS, GRADIENT_PRESETS, applyAdjust, defaults, type AdjustDef } from "../paint/adjust";
 import type { Workspace } from "../editor/workspace";
-import { Range, Seg, Toggle, shareOrDownload, safeName } from "./ui";
+import { Range, Seg, Toggle, shareOrDownload, safeName, pickFile } from "./ui";
 import { pageToCanvas } from "../lib/render";
 
 // ------------------------------------------------------------------ Layers
@@ -121,13 +121,20 @@ function Preview({ brush, color }: { brush: Brush; color: string }) {
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
+    let alive = true;
+    void preloadBrushImages(brush).then(() => alive && draw(el));
+    return () => {
+      alive = false;
+    };
+  }, [brush, color]); // eslint-disable-line react-hooks/exhaustive-deps
+  const draw = (el: HTMLDivElement) => {
     // render at the element's real pixel size so previews are sharp on high-DPI screens
     const dpr = Math.min(3, window.devicePixelRatio || 1);
     const w = Math.round((el.clientWidth || 300) * dpr);
     const c = brushPreview({ ...brush, minSize: brush.minSize * dpr, maxSize: brush.maxSize * dpr }, w, Math.round(el.clientHeight * dpr || 56 * dpr), color);
     c.className = "brush-stroke";
     el.replaceChildren(c);
-  }, [brush, color]);
+  };
   return <div ref={ref} className="brush-preview" />;
 }
 
@@ -136,11 +143,34 @@ export function BrushPanel({ current, onPick, color, custom, setCustom }: { curr
   const cur = all.find((b) => b.id === current) ?? BRUSHES[0];
   const [set, setSet] = useState<string>(cur.set);
   const [studio, setStudio] = useState(false);
-  const sets = [...BRUSH_SETS, ...(custom.length ? ["My Brushes"] : [])];
-  const list = all.filter((b) => (set === "My Brushes" ? custom.includes(b) : b.set === set));
+  const customSets = [...new Set(custom.map((b) => b.set))];
+  const sets = [...BRUSH_SETS, ...customSets];
+  const list = all.filter((b) => b.set === set);
+  const [busy, setBusy] = useState("");
+  const importProcreate = async () => {
+    const [f] = await pickFile(""); // any type: iOS greys out unknown extensions like .brushset
+    if (!f) return;
+    setBusy("Importing…");
+    try {
+      const { importBrushes } = await import("../lib/procreate");
+      const got = await importBrushes(f);
+      setCustom([...custom, ...got]);
+      setSet(got[0].set);
+      onPick(got[0].id);
+      setBusy(`Imported ${got.length} brush${got.length > 1 ? "es" : ""}`);
+    } catch (e) {
+      setBusy("Import failed: " + (e as Error).message);
+    }
+  };
   if (studio) return <BrushStudio brush={cur} color={color} onBack={() => setStudio(false)} custom={custom} setCustom={setCustom} onPick={onPick} />;
   return (
     <div className="brushes">
+      <div className="row gap wrap" style={{ marginBottom: 8 }}>
+        <button className="btn" onClick={importProcreate}>
+          Import Procreate brush (.brush / .brushset)
+        </button>
+        {busy && <span className="hint">{busy}</span>}
+      </div>
       <div className="brush-sets">
         {sets.map((s) => (
           <button key={s} className={s === set ? "on" : ""} onClick={() => setSet(s)}>

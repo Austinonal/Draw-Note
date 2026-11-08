@@ -1,7 +1,7 @@
 // Colours: Disc, Classic, Harmony, Value and Palettes, plus history (after ProCraft's Colors panel).
 import { useEffect, useRef, useState } from "react";
 import { HARMONIES, harmony, hexToHsv, hexToRgb, hsvToHex, hsvToRgb, rgbToHex, DEFAULT_PALETTES, type HSV, type Harmony } from "../paint/color";
-import { Seg, Range } from "./ui";
+import { Seg, Range, pickFile } from "./ui";
 
 type Tab = "disc" | "classic" | "harmony" | "value" | "palettes";
 
@@ -182,6 +182,22 @@ export function ColorPanel({ color, onChange, history, palettes, setPalettes }: 
           ))}
           <button className="btn" onClick={() => setPalettes([...all, { name: `Palette ${all.length + 1}`, colors: [color] }])}>
             New palette
+          </button>
+          <button
+            className="btn"
+            onClick={async () => {
+              const [f] = await pickFile(""); // any type: iOS greys out .swatches
+              if (!f) return;
+              try {
+                const { importSwatches } = await import("../lib/procreate");
+                const p = await importSwatches(f);
+                setPalettes([...all, p]);
+              } catch (e) {
+                alert("Import failed: " + (e as Error).message);
+              }
+            }}
+          >
+            Import Procreate palette (.swatches)
           </button>
         </div>
       )}

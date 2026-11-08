@@ -56,16 +56,43 @@ function rng(seed: number): () => number {
   };
 }
 
+// ---------- imported brush images ----------
+const brushImages = new Map<string, HTMLImageElement>();
+/** Decodes a brush's imported tip / grain images; call before painting or previewing with it. */
+export function preloadBrushImages(b: { shapeSrc?: string; grainSrc?: string }): Promise<void> {
+  const load = (src?: string) =>
+    !src || brushImages.get(src)?.complete
+      ? Promise.resolve()
+      : new Promise<void>((res) => {
+          const img = new Image();
+          img.onload = img.onerror = () => res();
+          img.src = src;
+          brushImages.set(src, img);
+        });
+  return Promise.all([load(b.shapeSrc), load(b.grainSrc)]).then(() => undefined);
+}
+const readyImage = (src?: string) => {
+  const img = src ? brushImages.get(src) : undefined;
+  return img && img.complete && img.naturalWidth ? img : null;
+};
+
 // ---------- tip shapes ----------
 const MASK = 128;
 const maskCache = new Map<string, HTMLCanvasElement>();
-function tipMask(shape: TipShape, hardness: number): HTMLCanvasElement {
+function tipMask(shape: TipShape, hardness: number, src?: string): HTMLCanvasElement {
   const hq = Math.round(hardness * 20) / 20;
-  const key = shape + hq;
+  const img = readyImage(src);
+  const key = img ? src! : shape + hq;
   const hit = maskCache.get(key);
   if (hit) return hit;
   const c = makeCanvas(MASK, MASK);
   const g = ctx2d(c);
+  if (img) {
+    const k = MASK / Math.max(img.width, img.height);
+    g.drawImage(img, (MASK - img.width * k) / 2, (MASK - img.height * k) / 2, img.width * k, img.height * k);
+    maskCache.set(key, c);
+    return c;
+  }
   const r = MASK / 2;
   g.fillStyle = "#fff";
   if (shape === "round" || shape === "flat") {
@@ -120,14 +147,14 @@ function tipMask(shape: TipShape, hardness: number): HTMLCanvasElement {
 }
 
 const tintCache = new Map<string, HTMLCanvasElement>();
-function tinted(shape: TipShape, hardness: number, color: string): HTMLCanvasElement {
-  const key = shape + Math.round(hardness * 20) + color;
+function tinted(shape: TipShape, hardness: number, color: string, src?: string): HTMLCanvasElement {
+  const key = (readyImage(src) ? src! : shape + Math.round(hardness * 20)) + color;
   const hit = tintCache.get(key);
   if (hit) return hit;
   if (tintCache.size > 400) tintCache.clear();
   const c = makeCanvas(MASK, MASK);
   const g = ctx2d(c);
-  g.drawImage(tipMask(shape, hardness), 0, 0);
+  g.drawImage(tipMask(shape, hardness, src), 0, 0);
   g.globalCompositeOperation = "source-in";
   g.fillStyle = color;
   g.fillRect(0, 0, MASK, MASK);
@@ -158,16 +185,23 @@ function valueNoise(size: number, cell: number, R: () => number): Float32Array {
     }
   return out;
 }
-export function grainTexture(kind: Grain, depth: number): HTMLCanvasElement | null {
-  if (kind === "none" || depth <= 0.01) return null;
+export function grainTexture(kind: Grain, depth: number, src?: string): HTMLCanvasElement | null {
+  const pic = readyImage(src);
+  if ((kind === "none" && !pic) || depth <= 0.01) return null;
   const dq = Math.round(depth * 20) / 20;
-  const key = kind + dq;
+  const key = (pic ? src! : kind) + dq;
   const hit = grainCache.get(key);
   if (hit) return hit;
-  const S = 256;
+  const S = pic ? Math.min(512, Math.max(pic.width, pic.height)) : 256;
   const R = rng(kind.length * 97);
   const v = new Float32Array(S * S);
-  if (kind === "paper" || kind === "charcoal") {
+  if (pic) {
+    const t = makeCanvas(S, S);
+    const tg = ctx2d(t, true);
+    tg.drawImage(pic, 0, 0, S, S);
+    const d = tg.getImageData(0, 0, S, S).data;
+    for (let i = 0; i < v.length; i++) v[i] = d[i * 4] / 255;
+  } else if (kind === "paper" || kind === "charcoal") {
     const o1 = valueNoise(S, 4, R),
       o2 = valueNoise(S, 16, R),
       o3 = valueNoise(S, 2, R);
@@ -200,7 +234,7 @@ export function grainTexture(kind: Grain, depth: number): HTMLCanvasElement | nu
   const g = ctx2d(c);
   const img = g.createImageData(S, S);
   for (let i = 0; i < v.length; i++) {
-    const n = (v[i] - lo) / (hi - lo || 1);
+    const n = pic ? v[i] : (v[i] - lo) / (hi - lo || 1);
     const a = 1 - dq * (1 - n);
     img.data[i * 4] = img.data[i * 4 + 1] = img.data[i * 4 + 2] = 255;
     img.data[i * 4 + 3] = Math.max(0, Math.min(255, a * 255));
@@ -459,7 +493,7 @@ export class StrokeEngine {
       t.clearRect(0, 0, sz + 2, sz + 2);
       t.drawImage(this.work, prev.x - sz / 2, prev.y - sz / 2, sz, sz, 0, 0, sz, sz);
       t.globalCompositeOperation = "destination-in";
-      t.drawImage(tipMask(b.shape === "round" ? "round" : b.shape, Math.min(b.hardness, 0.6)), 0, 0, sz, sz);
+      t.drawImage(tipMask(b.shape, Math.min(b.hardness, 0.6), b.shapeSrc), 0, 0, sz, sz);
       const g = this.workCtx;
       g.globalAlpha = Math.min(1, 0.25 + s.opacity * 0.75) * Math.max(0.3, alpha);
       g.drawImage(this.tmp, 0, 0, sz, sz, x - sz / 2, y - sz / 2, sz, sz);
@@ -480,7 +514,7 @@ export class StrokeEngine {
     if (rot) g.rotate(rot);
     if (b.roundness < 1) g.scale(1, b.roundness);
     g.globalAlpha = Math.max(0, Math.min(1, alpha));
-    g.drawImage(tinted(b.shape, b.hardness, s.mode === "erase" ? "#000000" : color), -r, -r, size, size);
+    g.drawImage(tinted(b.shape, b.hardness, s.mode === "erase" ? "#000000" : color, b.shapeSrc), -r, -r, size, size);
     g.restore();
     return rect;
   }
@@ -500,7 +534,7 @@ export class StrokeEngine {
     g.clearRect(r.x, r.y, r.w, r.h);
     g.globalCompositeOperation = "source-over";
     g.drawImage(this.raw, r.x, r.y, r.w, r.h, r.x, r.y, r.w, r.h);
-    const grain = grainTexture(s.brush.grain, s.brush.grainDepth);
+    const grain = grainTexture(s.brush.grain, s.brush.grainDepth, s.brush.grainSrc);
     if (grain) {
       const pat = g.createPattern(grain, "repeat");
       if (pat) {

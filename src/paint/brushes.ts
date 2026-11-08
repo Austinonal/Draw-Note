@@ -34,6 +34,8 @@ export interface Brush {
   briJitter: number;
   wetEdges: number; // 0..1 darkened edges (watercolour)
   velocitySize: number; // -1..1 speed thins (−) or thickens (+) the line
+  shapeSrc?: string; // imported tip image: white-on-transparent mask (data URL)
+  grainSrc?: string; // imported grain image: greyscale, white = paint (data URL)
 }
 
 const base: Omit<Brush, "id" | "name" | "set"> = {

@@ -12,7 +12,8 @@ import { ColorPanel } from "./ColorPanel";
 import { AdjustPanel, BrushPanel, LayersPanel, PagesPanel, TimelapsePanel } from "./panels";
 import { Panel, Range, Seg, Toggle, Toast, VSlider, pickFile, readAsDataUrl, shareOrDownload, safeName } from "./ui";
 import type { Brush as BrushDef } from "../paint/brushes";
-import { exportBackup } from "../lib/storage";
+import { exportBackup, getValue, putValue } from "../lib/storage";
+import { preloadBrushImages } from "../paint/engine";
 import { DEFAULT_PALETTES } from "../paint/color";
 import { compositeLayers } from "../lib/render";
 import type { Symmetry } from "../paint/engine";
@@ -97,8 +98,17 @@ export function Editor({ doc, onClose }: { doc: Doc; onClose: () => void }) {
   }, []);
   const setCustom = (b: BrushDef[]) => {
     setCustomRaw(b);
-    save("dn.brushes", b);
+    void Promise.all(b.map(preloadBrushImages)).then(() => setTick((t) => t + 1));
+    // IndexedDB, not localStorage: imported brushes carry PNG textures (~5 MB localStorage limit)
+    putValue("settings/brushes", b).catch(() => setToast("Could not save brushes"));
   };
+  useEffect(() => {
+    void getValue<BrushDef[]>("settings/brushes").then(async (b) => {
+      if (!b) return; // first run: keep the localStorage copy, it is migrated on the next save
+      await Promise.all(b.map(preloadBrushImages));
+      setCustomRaw(b);
+    });
+  }, []);
   const setPalettes = (p: typeof palettes) => {
     setPalettesRaw(p);
     save("dn.palettes", p);
