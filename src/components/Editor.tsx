@@ -328,6 +328,20 @@ export function Editor({ doc, onClose }: { doc: Doc; onClose: () => void }) {
     if (editable) setTs({ mode: "notes", noteTool: "text" });
   };
   const hasPdf = doc.pages.some((p) => p.bg);
+  const runOcr = async (all: boolean) => {
+    const w = wsRef.current;
+    if (!w) return;
+    setPanel(null);
+    setBusy("Loading OCR (first time downloads ~7 MB)…");
+    try {
+      const n = await w.ocrPages(all, setBusy);
+      setTs({ mode: "notes", noteTool: "text" });
+      setToast(n ? `Found ${n} line${n > 1 ? "s" : ""} — tap one to edit` : "No text found");
+    } catch (e) {
+      alert("OCR failed: " + (e as Error).message);
+    }
+    setBusy(null);
+  };
 
   const exportAnimation = async () => {
     const w = wsRef.current;
@@ -678,11 +692,17 @@ export function Editor({ doc, onClose }: { doc: Doc; onClose: () => void }) {
                       if (!v && ts.noteTool === "lift") setTs({ noteTool: "pen" });
                       else if (v) {
                         setTs({ mode: "notes", noteTool: "text" });
-                        if (!doc.pages.some((p) => p.pdfLines?.length)) setToast("No editable text found — PDFs imported before this update need re-importing (lifting areas still works)");
+                        if (!doc.pages.some((p) => p.pdfLines?.length)) setToast("No text layer found — use Detect text (OCR) below");
                       }
                       ws.request();
                     }}
                   />
+                )}
+                {hasPdf && (
+                  <div className="chips">
+                    <button onClick={() => runOcr(false)}>Detect text (OCR) — this page</button>
+                    <button onClick={() => runOcr(true)}>OCR all pages</button>
+                  </div>
                 )}
                 <p className="hint">Gestures: pinch to zoom (and rotate on canvases), two-finger tap = undo, three-finger tap = redo. Hold at the end of a line to snap a shape.</p>
               </div>

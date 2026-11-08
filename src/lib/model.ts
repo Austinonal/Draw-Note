@@ -168,6 +168,7 @@ export interface PdfLine {
   text: string;
   dx: number;
   dy: number;
+  angle?: number; // text direction in radians (y down); rotated / skewed text
 }
 export const pdfLineEdited = (l: PdfLine) => l.text !== l.orig || l.dx !== 0 || l.dy !== 0;
 

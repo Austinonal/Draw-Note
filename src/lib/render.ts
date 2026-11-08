@@ -216,16 +216,25 @@ export function drawPdfEdits(ctx: CanvasRenderingContext2D, page: Page, skip?: S
     ctx.fillRect(c.x, c.y, c.w, c.h);
   }
   const edited = (page.pdfLines ?? []).filter(pdfLineEdited);
+  // each line is drawn in its own frame: origin at its baseline start, rotated by its angle
+  const frame = (l: (typeof edited)[number], moved: boolean) => {
+    ctx.setTransform(base);
+    ctx.translate(l.x + (moved ? l.dx : 0), l.base + (moved ? l.dy : 0));
+    if (l.angle) ctx.rotate(l.angle);
+  };
+  const base = ctx.getTransform();
   for (const l of edited) {
+    frame(l, false);
     ctx.fillStyle = l.bg;
-    ctx.fillRect(l.x - 1, l.y - 1, l.w + 2, l.h + 2);
+    ctx.fillRect(-1, l.y - l.base - 1, l.w + 2, l.h + 2);
   }
   ctx.textBaseline = "alphabetic";
   for (const l of edited) {
     if (skip?.has(l.id) || !l.text) continue;
+    frame(l, true);
     ctx.fillStyle = l.color;
     ctx.font = `${l.size}px ${l.font}, "Noto Sans Thai", sans-serif`;
-    ctx.fillText(l.text, l.x + l.dx, l.base + l.dy);
+    ctx.fillText(l.text, 0, 0);
   }
   ctx.restore();
 }

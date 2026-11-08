@@ -5,7 +5,9 @@
   "description": "DrawNote: a mobile-first notebook and painting app (notes + pro painting in one)",
   "type": "module",
   "scripts": {
+    "predev": "node scripts/copy-ocr.mjs",
     "dev": "vite --host",
+    "prebuild": "node scripts/copy-ocr.mjs",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host",
     "test": "vitest run",
@@ -14,11 +16,14 @@
     "android:open": "npx cap open android"
   },
   "dependencies": {
+    "@tesseract.js-data/eng": "1.0.0",
+    "@tesseract.js-data/tha": "1.0.0",
     "lucide-react": "^1.70.0",
     "pdf-lib": "1.17.1",
     "pdfjs-dist": "5.4.296",
     "react": "19.1.1",
-    "react-dom": "19.1.1"
+    "react-dom": "19.1.1",
+    "tesseract.js": "7.0.0"
   },
   "devDependencies": {
     "@capacitor/android": "7.4.3",

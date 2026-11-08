@@ -91,3 +91,26 @@ describe("PDF text lines", async () => {
     expect(lines.map((l) => l.str)).toEqual(["Hello world", "Column 2", "Next line"]);
   });
 });
+
+describe("rotated PDF text", async () => {
+  const { groupRuns, hitLine, lineCorners } = await import("../lib/pdftext");
+  it("groups runs along a 90° line and keeps the angle", () => {
+    const a = Math.PI / 2; // running downwards
+    const lines = groupRuns([
+      { x: 100, base: 10, size: 12, w: 30, str: "Up", font: "serif", angle: a },
+      { x: 100, base: 44, size: 12, w: 30, str: "right", font: "serif", angle: a },
+      { x: 10, base: 10, size: 12, w: 30, str: "flat", font: "serif", angle: 0 },
+    ]);
+    const v = lines.find((l) => l.str.startsWith("Up"))!;
+    expect(v.str).toBe("Up right");
+    expect(v.angle).toBeCloseTo(a);
+    expect(v.x).toBeCloseTo(100);
+    expect(v.base).toBeCloseTo(10);
+  });
+  it("hit-tests and outlines a rotated line in its own frame", () => {
+    const l = { id: "l", x: 100, y: 88, w: 60, h: 14, base: 100, size: 12, font: "serif", color: "#000", bg: "#fff", orig: "t", text: "t", dx: 0, dy: 0, angle: Math.PI / 2 };
+    expect(hitLine(l, 105, 130)).toBe(true); // on the rotated line: below its start, glyphs on the +x side
+    expect(hitLine(l, 130, 100)).toBe(false); // where an unrotated line would be
+    expect(lineCorners(l)[1].y).toBeCloseTo(160);
+  });
+});

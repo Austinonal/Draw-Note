@@ -12,6 +12,7 @@ import { floodFill } from "../paint/fill";
 import { blurData } from "../paint/adjust";
 import { rgbToHex } from "../paint/color";
 import { getBlob, putBlob, putDoc, layerKey, deleteBlob } from "../lib/storage";
+import { hitLine, lineCorners } from "../lib/pdftext";
 import type { PaintSlot, ToolState, WorkspaceEvents } from "./types";
 
 type Hist =
@@ -478,7 +479,12 @@ export class Workspace {
       g.strokeStyle = "rgba(59,130,246,.45)";
       g.lineWidth = px;
       g.setLineDash([3 * px, 3 * px]);
-      for (const l of this.page.pdfLines ?? []) g.strokeRect(l.x + l.dx - 1, l.y + l.dy - 1, l.w + 2, l.h + 2);
+      for (const l of this.page.pdfLines ?? []) {
+        g.beginPath();
+        lineCorners(l).forEach((q, i) => (i ? g.lineTo(q.x, q.y) : g.moveTo(q.x, q.y)));
+        g.closePath();
+        g.stroke();
+      }
       g.restore();
     }
     if (this.action.kind === "lasso" || this.action.kind === "select" || this.action.kind === "lift") {
@@ -1377,7 +1383,7 @@ export class Workspace {
   }
   private pdfLineAt(x: number, y: number): PdfLine | undefined {
     if (!this.pdfEditable) return undefined;
-    return (this.page.pdfLines ?? []).find((l) => x >= l.x + l.dx - 2 && x <= l.x + l.dx + l.w + 2 && y >= l.y + l.dy - 2 && y <= l.y + l.dy + l.h + 2);
+    return (this.page.pdfLines ?? []).find((l) => hitLine(l, x, y));
   }
   private pdfSnap(): PdfSnap {
     return { lines: (this.page.pdfLines ?? []).map((l) => ({ ...l })), covers: (this.page.covers ?? []).map((c) => ({ ...c })), objects: this.page.objects.map(cloneObj) };
@@ -1404,6 +1410,30 @@ export class Workspace {
     this.ev.editText({ id: l.id, kind: "text", left: tl.x, top: tl.y, width: Math.max(l.w, 60) * z, height: l.h * z, fontSize: l.size * z, color: l.color, font: l.font });
     this.request();
   }
+  /** Finds text in page backgrounds with OCR. Lines already edited are kept; unedited ones are
+   * replaced by what OCR reads. Returns how many lines were found. */
+  async ocrPages(all: boolean, onProgress: (msg: string) => void): Promise<number> {
+    const { ocrImage } = await import("../lib/ocr");
+    const targets = (all ? this.doc.pages : [this.page]).filter((p) => p.bg);
+    let found = 0;
+    for (const [i, p] of targets.entries()) {
+      const label = targets.length > 1 ? ` page ${i + 1}/${targets.length}` : "";
+      onProgress(`Reading text${label}…`);
+      const lines = await ocrImage(p.bg!, p.w, (f) => onProgress(`Reading text${label}… ${Math.round(f * 100)}%`));
+      found += lines.length;
+      const apply = () => (p.pdfLines = [...(p.pdfLines ?? []).filter((l) => l.text !== l.orig || l.dx || l.dy), ...lines]);
+      if (p === this.page) {
+        const before = this.pdfSnap();
+        apply();
+        this.pushPdf(before);
+      } else apply();
+    }
+    this.doc.pdfEditable = true;
+    this.markDocDirty();
+    this.request();
+    return found;
+  }
+
   /** Lifts a rectangle of the imported page off into a movable image (any element: picture,
    * table, diagram), covering where it was. */
   private liftArea(poly: { x: number; y: number }[]): void {
@@ -1421,7 +1451,7 @@ export class Workspace {
     cg.setTransform(k, 0, 0, k, -x * k, -y * k);
     cg.drawImage(img, 0, 0, p.w, p.h);
     // only text lines fully inside travel with the picture; others stay editable lines (not baked in)
-    const inside = (l: PdfLine) => l.x + l.dx >= x - 2 && l.y + l.dy >= y - 2 && l.x + l.dx + l.w <= x + w + 2 && l.y + l.dy + l.h <= y + h + 2;
+    const inside = (l: PdfLine) => lineCorners(l).every((q) => q.x >= x - 2 && q.y >= y - 2 && q.x <= x + w + 2 && q.y <= y + h + 2);
     drawPdfEdits(cg, p, new Set((p.pdfLines ?? []).filter((l) => !inside(l)).map((l) => l.id)));
     // cover colour: median of the crop's border
     const d = cg.getImageData(0, 0, crop.width, crop.height).data;
